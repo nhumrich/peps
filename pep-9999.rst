@@ -1,1 +1,519 @@
 
+PEP: 9999
+Title: Interpolated Template Strings
+Version: $Revision$
+Last-Modified: $Date$
+Author: Nick Humrich <nick.humrich@gmail.com>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Requires: 501
+Created: 01-Jun-2021
+Python-Version: 3.X
+Post-History: -
+
+Abstract
+========
+
+PEP 501 is a permanantly deferred PEP that proproposes an alternative approach to f-strings
+for lazy evaluation of strings. Lots of use cases were discussed on that PEP such as 
+internationalization, secure escaping, and logging. 
+
+This PEP is a follow-up to PEP 501, attempting to revisit the ideas in 501, but bring them to a conclusion. 
+
+As stated in PEP 501:
+
+"[f-strings] only offer [a basic] capability for string formatting, making it likely
+we will see code like the following::
+
+    os.system(f"echo {message_from_user}")
+
+This kind of code is superficially elegant, but poses a significant problem
+if the interpolated value ``message_from_user`` is in fact provided by an
+untrusted user: it's an opening for a form of code injection attack, where
+the supplied user data has not been properly escaped before being passed to
+the ``os.system`` call."
+
+
+Summary of differences from PEP 501
+===================================
+
+The key additions this proposal makes relative to PEP 501:
+
+* the "t" prefix instead of the "i" prefix. 
+* addressing concerns from the time of 501.
+* 501 was a competing PEP with 498. This PEP is intended to be a companion to 498 (f-strings)
+* Changed the name to "Template strings" to more closely align with the name of the feature in JavaScript.
+
+NOTE: This proposal spells out a draft API for ``types.InterpolationTemplate``.
+
+
+Proposal
+========
+
+This PEP proposes the introduction of a new string prefix that declares the
+string to be an interpolation template rather than an ordinary string::
+
+    template = t"Substitute {names} and {expressions()} at runtime"
+
+This would be effectively interpreted as::
+
+    _raw_template = "Substitute {names} and {expressions()} at runtime"
+    _field_values = {'names': names, 'expressions()': expressions()}
+    template = types.InterpolationTemplate(_raw_template,
+                                           _field_values)
+
+The ``__format__`` method on ``types.InterpolationTemplate`` would then
+implement the following ``str.format`` inspired semantics::
+
+  >>> import datetime
+  >>> name = 'Jane'
+  >>> age = 50
+  >>> anniversary = datetime.date(1991, 10, 12)
+  >>> format(t'My name is {name}, my age next year is {age+1}, my anniversary is {anniversary:%A, %B %d, %Y}.')
+  'My name is Jane, my age next year is 51, my anniversary is Saturday, October 12, 1991.'
+  >>> format(t'She said her name is {repr(name)}.')
+  "She said her name is 'Jane'."
+
+As with formatted strings, the template prefix can be combined with single-quoted, double-quoted and triple quoted strings, including raw strings.
+It does not support combination with bytes literals.
+
+
+Rationale
+=========
+
+PEP 498 has become a fairly important feature to Python. Some argue that PEP 498 and its proposed
+"f-strings"have been the main incentive for people to move to Python 3. 
+"f-strings" are now fairly ubiquitus and understood by the python community.
+The formatted strings of PEP 498 make interpolating values into strings with full access to Python's
+lexical namespace semantics simpler, but it does so eagerly, resulting in an immediate string object.
+There are situations where string evaluation should be delayed and/or lazily evaualted.
+Some of these situations are where interpolating values into sensitive targets like SQL queries,
+shell commands and HTML templates -- or when logging objects, and only want to do so if the log will actually render.
+
+This PEP proposes to provide the option of delaying the actual rendering
+of an interpolation template to its ``__format__`` method, allowing the use of
+other template renderers by passing the template around as a first class object.
+
+While very different in the technical details, the
+``types.TemplateString`` interface proposed in this PEP is
+conceptually quite similar to the ``FormattableString`` type underlying the
+`native interpolation <https://msdn.microsoft.com/en-us/library/dn961160.aspx>`__ support introduced in C# 6.0, 
+or to Tagged Templates support introduced in JavaScript in ES2016.
+
+
+Specification
+=============
+
+This PEP proposes the introduction of ``t`` as a new string prefix that
+results in the creation of an instance of a new type,
+``types.InterpolationTemplate``.
+
+Template literals are Unicode strings (bytes literals are not
+permitted), and string literal concatenation operates as normal, with the
+entire combined literal forming the interpolation template.
+
+The template string is parsed into literals, expressions and format specifiers
+as described for f-strings in PEP 498. Conversion specifiers are handled
+by the compiler, and appear as part of the field text in interpolation
+templates.
+
+However, rather than being rendered directly into a formatted strings, these
+components are instead organised into an instance of a new type with the
+following semantics::
+
+    class TemplateString:
+        __slots__ = ("raw_template", "field_values")
+
+        def __new__(cls, raw_template, field_values):
+            self = super().__new__(cls)
+            self.raw_template = raw_template
+            self.field_values = field_values
+            return self
+
+        def __repr__(self):
+            return (f"<{type(self).__qualname__} {repr(self._raw_template)} "
+                    f"at {id(self):#x}>")
+
+        def __format__(self, format_specifier):
+            # When formatted, render to a string, and use string formatting
+            return self.raw_template.format(**self.field_values)
+
+
+The result of a template string is an instance of this
+type, rather than an already rendered string - rendering only takes
+place when ``__format__`` method is called. Although, the main purpose
+is for other libraries to use the template, and render it how they see fit. 
+
+The compiler will pass the following details to the interpolated template string for
+later use:
+
+* a string containing the raw template as written in the source code
+* a dictionary containing the field names with the evaluated field values.
+  Note: Because python dictionaries maintain insertion order, ``field_values.values()``
+  will still be in the correct order, if order matters. 
+  
+The raw template is just the interpolation template as a string. By default,
+it is used to provide a human readable representation for the interpolation
+template. It also allows developers to more easily render a string by replacing the values
+and calling ``raw_template.format(**my_values)``
+
+The dictionary of field specifiers holds the raw string of the field as the key, and the
+*results* of evaluating the field specifiers as f-strings.
+
+Conversion specifiers
+---------------------
+
+NOTE:
+
+   Appropriate handling of conversion specifiers is currently an open question.
+   Exposing them more directly to custom renderers would increase the
+   complexity of the ``InterpolationTemplate`` definition without providing an
+   increase in expressiveness (since they're redundant with calling the builtins
+   directly). At the same time, they *are* made available as arbitrary strings
+   when writing custom ``string.Formatter`` implementations, so it may be
+   desirable to offer similar levels of flexibility of interpretation in
+   interpolation templates.
+
+The ``!a``, ``!r`` and ``!s`` conversion specifiers supported by ``str.format``
+and hence PEP 498 are handled in interpolation templates as follows:
+
+* they're included unmodified in the raw template to ensure no information is
+  lost
+* the corresponding field value placed in the field values tuple is
+  converted appropriately *before* being passed to the template strings
+
+This means that, for most purposes, the difference between the use of
+conversion specifiers and calling the corresponding builtins in the
+original interpolation template will be transparent to custom renderers. The
+difference will only be apparent if reparsing the raw template, or attempting
+to reconstruct the original template from the parsed template.
+
+Writing custom renderers
+------------------------
+
+Writing a custom renderer doesn't requiring any special syntax. Instead,
+custom renderers are ordinary callables that process a template strings
+directly either by calling the ``__format__()`` method, or by accessing the
+template's data attributes directly.
+
+For example, the following function would render a template using objects'
+``repr`` implementations rather than their native formatting support::
+
+    def reprformat(template):
+        rendered_fields = {k, repr(v) for k, v in template.field_values.items()}
+        return template.raw_template.format(**rendered_fields)
+
+
+Expression evaluation
+---------------------
+
+As with f-strings, the subexpressions that are extracted from the interpolation
+template are evaluated in the context where the interpolation template
+appears. This means the expression has full access to local, nonlocal and global variables. Any valid Python expression can be used inside ``{}``, including
+function and method calls.
+
+Because the substitution expressions are evaluated where the string appears in
+the source code, there are no additional security concerns related to the
+contents of the expression itself, as you could have also just written the
+same expression and used runtime field parsing::
+
+  >>> bar=10
+  >>> def foo(data):
+  ...   return data + 20
+  ...
+  >>> str(t'input={bar}, output={foo(bar)}')
+  'input=10, output=30'
+
+Is essentially equivalent to::
+
+  >>> 'input={}, output={}'.format(bar, foo(bar))
+  'input=10, output=30'
+
+Handling code injection attacks
+-------------------------------
+
+The PEP 498 formatted string syntax makes it potentially attractive to write
+code like the following::
+
+    runquery(f"SELECT {column} FROM {table};")
+    runcommand(f"cat {filename}")
+    return_response(f"<html><body>{response.body}</body></html>")
+
+These all represent potential vectors for code injection attacks, if any of the
+variables being interpolated happen to come from an untrusted source. The
+specific proposal in this PEP is designed to make it straightforward to write
+use case specific renderers that take care of quoting interpolated values
+appropriately for the relevant security context::
+
+    runquery(sql(t"SELECT {column} FROM {table};"))
+    runcommand(sh(t"cat {filename}"))
+    return_response(html(t"<html><body>{response.body}</body></html>"))
+
+This PEP does not cover adding such renderers to the standard library
+immediately, but rather proposes to ensure that they can be readily provided by
+third party libraries, and potentially incorporated into the standard library
+at a later date. 
+
+Earlier discussions of PEP 501 focused a lot on these different renders, and even had some
+early proposals for having custom "tagged" templates, such as in JavaScript.
+However, experience with JavaScript tagged templates can teach us that the renderer itself it not strictly neccesary,
+but rather, what is important is the delay of the rendering.
+Rather than require renders such as ``sql()``, the top level method ``runquery()`` could be written to accept
+template strings, and render those appropriately itself. This allows third party libraries even more
+protection against injection attackes by potentially enforcing that they 
+are passed in a template string and not a normal strings. 
+Since the evaluation is lazy, ``runquery()`` would know the difference between the 
+safe part and the "dirty" (user input) part of the string, and could potentially 
+eliminate injection if it never accepted normal strings.
+
+Renderers such as ``sql()`` should still exist for backwards compatibilty
+for libraires that do not support template strings.
+
+A possible implementation for such a SQL renderer, using `sqlalchemy.sql.text`` to return
+an `SQL Alchemy query object <http://docs.sqlalchemy.org/en/rel_1_0/core/tutorial.html#using-textual-sql>`__.
+
+    def sql(template):
+        param_names = {}
+        final_values = {}
+        for i (k, v) in enumerate(template.field_values.items()):
+            sql_key = f'value_{i}'
+            param_names[k] = f':{sql_key}'
+            final_values[sql_key] = v
+        return sqlalchemy.text(template.raw_template.format(**param_names).params(**final_values)
+        
+
+Format specifiers
+-----------------
+
+Aside from them appearing in the raw template,
+format specifiers are otherwise treated as opaque strings by the interpolation
+template parser - assigning semantics to those (or, alternatively,
+prohibiting their use) is handled at runtime by the field renderer.
+
+Error handling
+--------------
+
+Either compile time or run time errors can occur when processing template strings.
+Compile time errors are limited to those errors that can be
+detected when parsing a template string into its values. These
+errors all raise SyntaxError.
+
+Unmatched braces::
+
+  >>> i'x={x'
+    File "<stdin>", line 1
+  SyntaxError: missing '}' in interpolation expression
+
+Invalid expressions::
+
+  >>> i'x={!x}'
+    File "<fstring>", line 1
+      !x
+      ^
+  SyntaxError: invalid syntax
+
+Run time errors occur when evaluating the expressions inside a
+template string before creating the template object. See PEP 498
+for some examples.
+
+Different renderers may also impose additional runtime
+constraints on acceptable interpolated expressions and other formatting
+details, which will be reported as runtime exceptions.
+
+
+Possible integration with the logging module
+============================================
+
+One of the challenges with the logging module has been that we have previously
+been unable to devise a reasonable migration strategy away from the use of
+printf-style formatting. The runtime parsing and interpolation overhead for
+logging messages also poses a problem for extensive logging of runtime events
+for monitoring purposes.
+
+While beyond the scope of this initial PEP, interpolation template support
+could potentially be added to the logging module's event reporting APIs,
+permitting relevant details to be captured using forms like::
+
+    logging.debug(t"Event: {event}; Details: {data}")
+    logging.critical(t"Error: {error}; Details: {data}")
+
+Rather than the current mod-formatting style::
+
+    logging.debug("Event: %s; Details: %s", event, data)
+    logging.critical("Error: %s; Details: %s", event, data)
+
+As the interpolation template is passed in as an ordinary argument, other
+keyword arguments would also remain available::
+
+    logging.critical(t"Error: {error}; Details: {data}", exc_info=True)
+
+As part of any such integration, a recommended approach would need to be
+defined for "lazy evaluation" of interpolated fields, as the ``logging``
+module's existing delayed interpolation support provides access to
+`various attributes <https://docs.python.org/3/library/logging.html#logrecord-attributes>`__ of the event ``LogRecord`` instance.
+
+For example, since interpolation expressions are arbitrary Python expressions,
+string literals could be used to indicate cases where evaluation itself is
+being deferred, not just rendering::
+
+    logging.debug(t"Logger: {'record.name'}; Event: {event}; Details: {data}")
+
+This could be further extended with idioms like using inline tuples to indicate
+deferred function calls to be made only if the log message is actually
+going to be rendered at current logging levels::
+
+    logging.debug(t"Event: {event}; Details: {expensive_call, raw_data}")
+
+This kind of approach would be possible as having access to the actual *text*
+of the field expression would allow the logging renderer to distinguish
+between inline tuples that appear in the field expression itself, and tuples
+that happen to be passed in as data values in a normal field.
+
+
+Discussion
+==========
+
+Refer to PEP 498 for additional discussion, as several of the points there
+also apply to this PEP.
+
+Deferring support for binary interpolation
+------------------------------------------
+
+Supporting binary interpolation with this syntax would be relatively
+straightforward (the elements in the parsed fields tuple would just be
+byte strings rather than text strings, and the default renderer would be
+markedly less useful), but poses a significant likelihood of producing
+confusing type errors when a text renderer was presented with
+binary input.
+
+Since the proposed syntax is useful without binary interpolation support, and
+such support can be readily added later, further consideration of binary
+interpolation is considered out of scope for the current PEP.
+
+Interoperability with str-only interfaces
+-----------------------------------------
+
+For interoperability with interfaces that only accept strings, interpolation
+templates can still be prerendered with ``format``, rather than delegating the
+rendering to the called function.
+
+This reflects the key difference from PEP 498, which *always* eagerly applies
+the default rendering, without any way to delegate the choice of renderer to
+another section of the code.
+
+Preserving the raw template string
+----------------------------------
+
+Earlier versions of this PEP failed to make the raw template string available
+on the interpolation template. Retaining it makes it possible to provide a more
+attractive template representation, as well as providing the ability to
+precisely reconstruct the original string, including both the expression text
+and the details of any eagerly rendered substitution fields in format specifiers.
+
+Creating a rich object rather than a global name lookup
+-------------------------------------------------------
+
+Earlier versions of this PEP used an ``__interpolate__`` builtin, rather than
+a creating a new kind of object for later consumption by interpolation
+functions. Creating a rich descriptive object with a useful default renderer
+made it much easier to support customisation of the semantics of interpolation.
+
+Building atop PEP 498, rather than competing with it
+----------------------------------------------------
+
+Earlier versions of this PEP attempted to serve as a complete substitute for
+PEP 498, rather than building a more flexible delayed rendering capability on
+top of PEP 498's eager rendering.
+
+Assuming the presence of f-strings as a supporting capability simplified a
+number of aspects of the proposal in this PEP (such as how to handle substitution
+fields in format specifiers)
+
+Deferring consideration of possible use in i18n use cases
+---------------------------------------------------------
+
+The initial motivating use case for this PEP was providing a cleaner syntax
+for i18n translation, as that requires access to the original unmodified
+template. As such, it focused on compatibility with the substitution syntax used
+in Python's ``string.Template`` formatting and Mozilla's l20n project.
+
+However, subsequent discussion revealed there are significant additional
+considerations to be taken into account in the i18n use case, which don't
+impact the simpler cases of handling interpolation into security sensitive
+contexts (like HTML, system shells, and database queries), or producing
+application debugging messages in the preferred language of the development
+team (rather than the native language of end users).
+
+Due to the original design of the ``str.format`` substitution syntax in PEP
+3101 being inspired by C#'s string formatting syntax, the specific field
+substitution syntax used in PEP 498 is consistent not only with Python's own ``str.format`` syntax, but also with string formatting in C#, including the
+native "$-string" interpolation syntax introduced in C# 6.0 (released in July
+2015).  The related ``IFormattable`` interface in C# forms the basis of a
+`number of elements <https://msdn.microsoft.com/en-us/library/system.iformattable.aspx>`__ of C#'s internationalization and localization
+support.
+
+This means that while this particular substitution syntax may not
+currently be widely used for translation of *Python* applications (losing out
+to traditional %-formatting and the designed-specifically-for-i18n
+``string.Template`` formatting), it *is* a popular translation format in the
+wider software development ecosystem (since it is already the preferred
+format for translating C# applications).
+
+Acknowledgements
+================
+
+* Eric V. Smith for creating PEP 498 and demonstrating the feasibility of
+  arbitrary expression substitution in string interpolation
+* Barry Warsaw, Armin Ronacher, and Mike Miller for their contributions to
+  exploring the feasibility of using this model of delayed rendering in i18n
+  use cases (even though the ultimate conclusion was that it was a poor fit,
+  at least for current approaches to i18n in Python)
+
+References
+==========
+
+.. [#] %-formatting
+       (https://docs.python.org/3/library/stdtypes.html#printf-style-string-formatting)
+
+.. [#] str.format
+       (https://docs.python.org/3/library/string.html#formatstrings)
+
+.. [#] string.Template documentation
+       (https://docs.python.org/3/library/string.html#template-strings)
+
+.. [#] PEP 215: String Interpolation
+       (https://www.python.org/dev/peps/pep-0215/)
+
+.. [#] PEP 292: Simpler String Substitutions
+       (https://www.python.org/dev/peps/pep-0292/)
+
+.. [#] PEP 3101: Advanced String Formatting
+       (https://www.python.org/dev/peps/pep-3101/)
+
+.. [#] PEP 498: Literal string formatting
+       (https://www.python.org/dev/peps/pep-0498/)
+
+.. [#] FormattableString and C# native string interpolation
+       (https://msdn.microsoft.com/en-us/library/dn961160.aspx)
+
+.. [#] IFormattable interface in C# (see remarks for globalization notes)
+       (https://msdn.microsoft.com/en-us/library/system.iformattable.aspx)
+
+.. [#] Running external commands in Julia
+       (http://julia.readthedocs.org/en/latest/manual/running-external-programs/)
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:
