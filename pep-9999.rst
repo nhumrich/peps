@@ -1,13 +1,13 @@
 
 PEP: 9999
-Title: Interpolated Template Strings
+Title: Template String Interpolation
 Version: $Revision$
 Last-Modified: $Date$
 Author: Nick Humrich <nick.humrich@gmail.com>
-Status: Draft
+Status: Draftwa
 Type: Standards Track
 Content-Type: text/x-rst
-Requires: 501
+Requires: 498, 501
 Created: 01-Jun-2021
 Python-Version: 3.X
 Post-History: -
@@ -15,55 +15,63 @@ Post-History: -
 Abstract
 ========
 
+PEP 498 -- Literal String interpolation, introduced a new way to format string literals in python. 
+This literal string interpolation, also called "f-strings", has become fairly ubiquitus, and the de-facto standard to formating 
+string literals in python. As f-strings have become the standard way to format strings, a feature, that pairs with f-strings
+is needed for cases where strings need to be lazily evaluated. Previous to f-strings and pythons .format method, 
+another common way to format strings was with the formating operator ``%``. For example::
+
+    >>> print('Hello %s, how was your %s' % ('bob', 'day'))
+    Hello bob, how was your day
+    
+This syntax could be used to evaluate a string lazily by passing the variables through functions, and evaluating at the very end. 
+F-strings however are always eager, the variables passed into an f-string become evaluated immediately. 
+Lazily evalutated strings have many use cases such as logging, secure escaping, and internationalization. 
+
+This PEP proposes a syntactically equivalent version of the f-string that becomes a string template object (lazily evaluated) instead of a string literal. 
+
+
+Differences from PEP 501
+===================================
+
 PEP 501 is a permanantly deferred PEP that proproposes an alternative approach to f-strings
 for lazy evaluation of strings. Lots of use cases were discussed on that PEP such as 
 internationalization, secure escaping, and logging. 
 
-This PEP is a follow-up to PEP 501, attempting to revisit the ideas in 501, but bring them to a conclusion. 
-
-As stated in PEP 501:
-
-"[f-strings] only offer [a basic] capability for string formatting, making it likely
-we will see code like the following::
-
-    os.system(f"echo {message_from_user}")
-
-This kind of code is superficially elegant, but poses a significant problem
-if the interpolated value ``message_from_user`` is in fact provided by an
-untrusted user: it's an opening for a form of code injection attack, where
-the supplied user data has not been properly escaped before being passed to
-the ``os.system`` call."
-
-
-Summary of differences from PEP 501
-===================================
+This PEP is a follow-up to PEP 501, attempting to revisit the ideas in 501, but bring them to a conclusion. The main reason PEP 501 was defferred was because it was introduced as an alternative to PEP 498. As PEP 498 became excepted, 501 slipped into deferred status, with the intention of waiting to see what would happen with f-strings. As f-strings have now been in python for almost 5 years, it is time to revisit the idea. On the Python mailing list, Guido said that PEP 501 would never be revisited in its current state, and suggested that a new PEP be written. 
 
 The key additions this proposal makes relative to PEP 501:
 
 * the "t" prefix instead of the "i" prefix. 
 * addressing concerns from the time of 501.
 * 501 was a competing PEP with 498. This PEP is intended to be a companion to 498 (f-strings)
-* Changed the name to "Template strings" to more closely align with the name of the feature in JavaScript.
+* Changed the name to "Template Strings" to more closely align with the name of the feature in JavaScript, and also have a name that pairs with 498. 
 
-NOTE: This proposal spells out a draft API for ``types.InterpolationTemplate``.
+
+
+NOTE: This proposal spells out a draft API for ``types.TemplateString``.
 
 
 Proposal
 ========
 
 This PEP proposes the introduction of a new string prefix that declares the
-string to be an interpolation template rather than an ordinary string::
+string to be a string template rather than an ordinary string::
 
-    template = t"Substitute {names} and {expressions()} at runtime"
+    names = ['Ken', 'Mr. Praline']
+    
+    template = t"Hello {names}. There are {len(names):8d} of you."
 
 This would be effectively interpreted as::
 
-    _raw_template = "Substitute {names} and {expressions()} at runtime"
-    _field_values = {'names': names, 'expressions()': expressions()}
-    template = types.InterpolationTemplate(_raw_template,
-                                           _field_values)
+    _raw_template = "Hello {names}. There are {len(names):8d} of you."
+    _string_tuple = ('Hello ', ' and ', ' at runtime')
+    _values_tuple = ((['Ken', 'Mr. Praline'], ''), ((2, '8d'), ('', ''))
+    template = types.TemplateString(_raw_template,
+                                    _string_tuple,
+                                    _values_tuple)
 
-The ``__format__`` method on ``types.InterpolationTemplate`` would then
+The ``__format__`` method on ``types.TemplateString`` would then
 implement the following ``str.format`` inspired semantics::
 
   >>> import datetime
@@ -92,7 +100,7 @@ Some of these situations are where interpolating values into sensitive targets l
 shell commands and HTML templates -- or when logging objects, and only want to do so if the log will actually render.
 
 This PEP proposes to provide the option of delaying the actual rendering
-of an interpolation template to its ``__format__`` method, allowing the use of
+of a template string to its ``__format__`` method, allowing the use of
 other template renderers by passing the template around as a first class object.
 
 While very different in the technical details, the
@@ -107,28 +115,28 @@ Specification
 
 This PEP proposes the introduction of ``t`` as a new string prefix that
 results in the creation of an instance of a new type,
-``types.InterpolationTemplate``.
+``types.TemplateString``.
 
-Template literals are Unicode strings (bytes literals are not
+Template strings are Unicode strings (bytes literals are not
 permitted), and string literal concatenation operates as normal, with the
 entire combined literal forming the interpolation template.
 
-The template string is parsed into literals, expressions and format specifiers
+The template string is parsed into literals, values and format specifiers
 as described for f-strings in PEP 498. Conversion specifiers are handled
-by the compiler, and appear as part of the field text in interpolation
-templates.
+by the compiler, and appear as part of the field text in template strings.
 
 However, rather than being rendered directly into a formatted strings, these
 components are instead organised into an instance of a new type with the
 following semantics::
 
     class TemplateString:
-        __slots__ = ("raw_template", "field_values")
+        __slots__ = ("raw_template", "literals", "values")
 
-        def __new__(cls, raw_template, field_values):
+        def __new__(cls, raw_template, literals, values):
             self = super().__new__(cls)
             self.raw_template = raw_template
-            self.field_values = field_values
+            self.literals = literals
+            self.values = values
             return self
 
         def __repr__(self):
@@ -137,7 +145,7 @@ following semantics::
 
         def __format__(self, format_specifier):
             # When formatted, render to a string, and use string formatting
-            return self.raw_template.format(**self.field_values)
+            return ''.join(f'{literal}{format(value[0], value[1])}' for literal, value in zip(this.literals, values))
 
 
 The result of a template string is an instance of this
@@ -149,31 +157,22 @@ The compiler will pass the following details to the interpolated template string
 later use:
 
 * a string containing the raw template as written in the source code
-* a dictionary containing the field names with the evaluated field values.
-  Note: Because python dictionaries maintain insertion order, ``field_values.values()``
-  will still be in the correct order, if order matters. 
+* a tuple containing the literal strings parts
+* a tuple containing a tuples of the values, will always be the same length as the literal string tuple
+* each value is in-and-of-itself a tuple of the actual value, and the format specifier. (empty string if none is given)
   
 The raw template is just the interpolation template as a string. By default,
 it is used to provide a human readable representation for the interpolation
-template. It also allows developers to more easily render a string by replacing the values
-and calling ``raw_template.format(**my_values)``
-
-The dictionary of field specifiers holds the raw string of the field as the key, and the
-*results* of evaluating the field specifiers as f-strings.
+template. It also allows developers to more easily find where it might be in code if they call `repr()` on it.
 
 Conversion specifiers
 ---------------------
 
 NOTE:
 
-   Appropriate handling of conversion specifiers is currently an open question.
-   Exposing them more directly to custom renderers would increase the
-   complexity of the ``InterpolationTemplate`` definition without providing an
-   increase in expressiveness (since they're redundant with calling the builtins
-   directly). At the same time, they *are* made available as arbitrary strings
-   when writing custom ``string.Formatter`` implementations, so it may be
-   desirable to offer similar levels of flexibility of interpretation in
-   interpolation templates.
+   Appropriate handling of conversion specifiers is up to the developer using the template string.
+   The built in template string format would pass them directly to the builtin format, but 
+   developers are welcome to change how the specifier is interpreted, increasing expressiveness.
 
 The ``!a``, ``!r`` and ``!s`` conversion specifiers supported by ``str.format``
 and hence PEP 498 are handled in interpolation templates as follows:
@@ -201,8 +200,8 @@ For example, the following function would render a template using objects'
 ``repr`` implementations rather than their native formatting support::
 
     def reprformat(template):
-        rendered_fields = {k, repr(v) for k, v in template.field_values.items()}
-        return template.raw_template.format(**rendered_fields)
+        rendered_values = (repr(value) for value,_ in template.values)
+        return ''.join(f'{literal}{value}' for literal, value in zip(template.literals, rendered_values))
 
 
 Expression evaluation
@@ -274,22 +273,15 @@ A possible implementation for such a SQL renderer, using `sqlalchemy.sql.text`` 
 an `SQL Alchemy query object <http://docs.sqlalchemy.org/en/rel_1_0/core/tutorial.html#using-textual-sql>`__.
 
     def sql(template):
-        param_names = {}
+        params = []
         final_values = {}
-        for i (k, v) in enumerate(template.field_values.items()):
+        for i (v, s) in enumerate(template.values):
             sql_key = f'value_{i}'
-            param_names[k] = f':{sql_key}'
+            params.append(f':{sql_key}')
             final_values[sql_key] = v
-        return sqlalchemy.text(template.raw_template.format(**param_names).params(**final_values)
+        sql_string = ''.join(f'{literal}{value}' for literal, value in zip(template.literals, params))
+        return sqlalchemy.text(sql_string).params(**final_values)
         
-
-Format specifiers
------------------
-
-Aside from them appearing in the raw template,
-format specifiers are otherwise treated as opaque strings by the interpolation
-template parser - assigning semantics to those (or, alternatively,
-prohibiting their use) is handled at runtime by the field renderer.
 
 Error handling
 --------------
@@ -331,7 +323,7 @@ printf-style formatting. The runtime parsing and interpolation overhead for
 logging messages also poses a problem for extensive logging of runtime events
 for monitoring purposes.
 
-While beyond the scope of this initial PEP, interpolation template support
+While beyond the scope of this initial PEP, template string support
 could potentially be added to the logging module's event reporting APIs,
 permitting relevant details to be captured using forms like::
 
@@ -402,38 +394,11 @@ This reflects the key difference from PEP 498, which *always* eagerly applies
 the default rendering, without any way to delegate the choice of renderer to
 another section of the code.
 
-Preserving the raw template string
-----------------------------------
-
-Earlier versions of this PEP failed to make the raw template string available
-on the interpolation template. Retaining it makes it possible to provide a more
-attractive template representation, as well as providing the ability to
-precisely reconstruct the original string, including both the expression text
-and the details of any eagerly rendered substitution fields in format specifiers.
-
-Creating a rich object rather than a global name lookup
--------------------------------------------------------
-
-Earlier versions of this PEP used an ``__interpolate__`` builtin, rather than
-a creating a new kind of object for later consumption by interpolation
-functions. Creating a rich descriptive object with a useful default renderer
-made it much easier to support customisation of the semantics of interpolation.
-
-Building atop PEP 498, rather than competing with it
-----------------------------------------------------
-
-Earlier versions of this PEP attempted to serve as a complete substitute for
-PEP 498, rather than building a more flexible delayed rendering capability on
-top of PEP 498's eager rendering.
-
-Assuming the presence of f-strings as a supporting capability simplified a
-number of aspects of the proposal in this PEP (such as how to handle substitution
-fields in format specifiers)
 
 Deferring consideration of possible use in i18n use cases
 ---------------------------------------------------------
 
-The initial motivating use case for this PEP was providing a cleaner syntax
+The initial motivating use case for PEP 501 was providing a cleaner syntax
 for i18n translation, as that requires access to the original unmodified
 template. As such, it focused on compatibility with the substitution syntax used
 in Python's ``string.Template`` formatting and Mozilla's l20n project.
@@ -460,15 +425,6 @@ to traditional %-formatting and the designed-specifically-for-i18n
 wider software development ecosystem (since it is already the preferred
 format for translating C# applications).
 
-Acknowledgements
-================
-
-* Eric V. Smith for creating PEP 498 and demonstrating the feasibility of
-  arbitrary expression substitution in string interpolation
-* Barry Warsaw, Armin Ronacher, and Mike Miller for their contributions to
-  exploring the feasibility of using this model of delayed rendering in i18n
-  use cases (even though the ultimate conclusion was that it was a poor fit,
-  at least for current approaches to i18n in Python)
 
 References
 ==========
@@ -493,12 +449,18 @@ References
 
 .. [#] PEP 498: Literal string formatting
        (https://www.python.org/dev/peps/pep-0498/)
+       
+.. [#] PEP 501: General purpose string interpolation
+       (https://www.python.org/dev/peps/pep-0501/)
 
 .. [#] FormattableString and C# native string interpolation
        (https://msdn.microsoft.com/en-us/library/dn961160.aspx)
 
 .. [#] IFormattable interface in C# (see remarks for globalization notes)
        (https://msdn.microsoft.com/en-us/library/system.iformattable.aspx)
+ 
+ .. [#] Tagged Template Literals in JavaScript
+       (https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Template_literals#tagged_templates)
 
 .. [#] Running external commands in Julia
        (http://julia.readthedocs.org/en/latest/manual/running-external-programs/)
