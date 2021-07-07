@@ -459,7 +459,7 @@ References
 .. [#] IFormattable interface in C# (see remarks for globalization notes)
        (https://msdn.microsoft.com/en-us/library/system.iformattable.aspx)
  
- .. [#] Tagged Template Literals in JavaScript
+.. [#] Tagged Template Literals in JavaScript
        (https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Template_literals#tagged_templates)
 
 .. [#] Running external commands in Julia
